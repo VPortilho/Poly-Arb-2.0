@@ -17,7 +17,7 @@ HOST = "https://clob.polymarket.com/"
 CHAIN_ID = 137
 MIN_SPREAD_PROFIT = 0.02      # 2% de lucro alvo
 SCAN_INTERVAL = 3             # segundos
-DRY_RUN = False               # se quiser so simular, mude para True
+DRY_RUN = True               # se quiser so simular, mude para True
 
 class SpreadArbBot:
     def __init__(self):
