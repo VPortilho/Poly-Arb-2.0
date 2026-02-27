@@ -13,11 +13,17 @@ load_dotenv()
 
 # CONFIGURAÇÃO
 PRIVATE_KEY = os.getenv("POLY_KEY")
-HOST = "https://clob.polymarket.com/"
+HOST = "https://clob.polymarket.com"   # FIX 1: removida barra final
 CHAIN_ID = 137
-MIN_SPREAD_PROFIT = 0.02   # 2%
-SCAN_INTERVAL = 3         # segundos
-DRY_RUN = True            # False = envia ordens reais
+MIN_SPREAD_PROFIT = 0.02               # 2%
+SCAN_INTERVAL = 3                      # segundos
+DRY_RUN = True                         # False = envia ordens reais
+
+# FIX 2: headers para evitar bloqueio da API
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; ArbBot/1.0)",
+    "Accept": "application/json"
+}
 
 
 class SpreadArbBot:
@@ -50,9 +56,14 @@ class SpreadArbBot:
     # ==============================
     def get_markets(self):
         try:
-            url = "https://clob.polymarket.com/markets"
-            r = requests.get(url, timeout=5)
+            url = f"{HOST}/markets"
+            r = requests.get(url, headers=HEADERS, timeout=5)
+            r.raise_for_status()
             data = r.json()
+
+            # FIX 3: a resposta pode ser dict com chave 'data'
+            if isinstance(data, dict):
+                data = data.get("data", [])
 
             if not isinstance(data, list):
                 print("[DEBUG] Resposta inesperada:", type(data))
@@ -91,12 +102,14 @@ class SpreadArbBot:
             t_no = clob_ids[1]
 
             r_yes = requests.get(
-                f"https://clob.polymarket.com/book?token_id={t_yes}",
+                f"{HOST}/book?token_id={t_yes}",
+                headers=HEADERS,
                 timeout=2
             ).json()
 
             r_no = requests.get(
-                f"https://clob.polymarket.com/book?token_id={t_no}",
+                f"{HOST}/book?token_id={t_no}",
+                headers=HEADERS,
                 timeout=2
             ).json()
 
@@ -108,27 +121,29 @@ class SpreadArbBot:
 
             cost = yes_ask + no_ask
 
-            # se custo for muito alto, não compensa
             if cost >= (1 - MIN_SPREAD_PROFIT):
                 return None
 
-            current_stake = self.bankroll * 0.10
+            # FIX 4: stake dividido entre os dois lados (não dobrar o risco)
+            total_stake = self.bankroll * 0.10
+            yes_stake = total_stake * yes_ask / cost
+            no_stake = total_stake * no_ask / cost
 
             yes_vol = float(r_yes["asks"][0]["size"]) * yes_ask
             no_vol = float(r_no["asks"][0]["size"]) * no_ask
             max_liquidity = min(yes_vol, no_vol)
 
-            if max_liquidity < current_stake:
+            if max_liquidity < total_stake:
                 return None
 
             profit_pct = (1 - cost) * 100
 
             print(
                 f"[OPORTUNIDADE] {market.get('slug', 'sem-slug')} | "
-                f"Lucro: {profit_pct:.2f}% | Stake: ${current_stake:.2f}"
+                f"Lucro: {profit_pct:.2f}% | Stake Total: ${total_stake:.2f}"
             )
 
-            return yes_ask, no_ask, current_stake, t_yes, t_no
+            return yes_ask, no_ask, yes_stake, no_stake, t_yes, t_no
 
         except Exception as e:
             print(f"[ERRO CHECK-SPREAD] {e}")
@@ -137,18 +152,25 @@ class SpreadArbBot:
     # ==============================
     # EXECUTAR ORDENS
     # ==============================
-    def execute(self, slug, yes_p, no_p, stake, t_yes, t_no):
+    def execute(self, slug, yes_p, no_p, yes_stake, no_stake, t_yes, t_no):
         print(f"[EXEC] 🚀 {slug}")
 
+        # FIX 5: calcula lucro esperado e registra
+        total_invested = yes_stake + no_stake
+        expected_profit = (1 - (yes_p + no_p)) * total_invested
+
         if DRY_RUN:
-            print(f"[SIMULAÇÃO] Ordem não enviada (DRY_RUN=True) | ${stake:.2f}")
+            print(
+                f"[SIMULAÇÃO] Ordem não enviada (DRY_RUN=True) | "
+                f"Investido: ${total_invested:.2f} | Lucro esperado: ${expected_profit:.4f}"
+            )
             return
 
         try:
             o1 = self.client.create_and_post_order(
                 OrderArgs(
                     price=yes_p,
-                    size=stake / yes_p,
+                    size=round(yes_stake / yes_p, 4),  # FIX 6: arredondar size
                     side=BUY,
                     token_id=t_yes
                 )
@@ -158,14 +180,22 @@ class SpreadArbBot:
             o2 = self.client.create_and_post_order(
                 OrderArgs(
                     price=no_p,
-                    size=stake / no_p,
+                    size=round(no_stake / no_p, 4),    # FIX 6: arredondar size
                     side=BUY,
                     token_id=t_no
                 )
             )
             print(f"✅ NO: {o2}")
 
+            # FIX 5: atualiza bankroll e métricas
             self.trades += 1
+            self.profit += expected_profit
+            self.bankroll += expected_profit
+            print(
+                f"[STATS] Trades: {self.trades} | "
+                f"Lucro acumulado: ${self.profit:.4f} | "
+                f"Bankroll: ${self.bankroll:.2f}"
+            )
 
         except Exception as e:
             print(f"[ERRO EXEC] {e}")
@@ -174,17 +204,29 @@ class SpreadArbBot:
     # LOOP PRINCIPAL
     # ==============================
     async def run(self):
-        print(f"[STATUS] Monitorando oportunidades... ({SCAN_INTERVAL}s)")
+        print(f"[STATUS] Monitorando oportunidades... (intervalo: {SCAN_INTERVAL}s)")
+        print(f"[STATUS] Bankroll inicial: ${self.bankroll:.2f}")
 
-        while True:
-            markets = self.get_markets()
+        try:
+            while True:
+                markets = self.get_markets()
+                print(f"[SCAN] {datetime.now().strftime('%H:%M:%S')} — {len(markets)} mercados ativos")
 
-            for m in markets:
-                opp = self.check_spread(m)
-                if opp:
-                    self.execute(m.get("slug", "sem-slug"), *opp)
+                for m in markets:
+                    opp = self.check_spread(m)
+                    if opp:
+                        self.execute(m.get("slug", "sem-slug"), *opp)
 
-            await asyncio.sleep(SCAN_INTERVAL)
+                await asyncio.sleep(SCAN_INTERVAL)
+
+        # FIX 7: encerramento limpo com Ctrl+C
+        except KeyboardInterrupt:
+            print("\n[ENCERRADO] Bot parado pelo usuário.")
+            print(
+                f"[RESUMO] Trades: {self.trades} | "
+                f"Lucro: ${self.profit:.4f} | "
+                f"Bankroll final: ${self.bankroll:.2f}"
+            )
 
 
 # ==============================
