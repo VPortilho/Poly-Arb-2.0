@@ -81,13 +81,10 @@ class SpreadArbBot:
             url = "https://clob.polymarket.com/markets"
             r = requests.get(url, timeout=4)
             print(f"[GET_MARKETS] HTTP {r.status_code}")
-
             if r.status_code != 200:
                 print(f"[API] Erro {r.status_code} ao buscar mercados. Body: {r.text[:200]}")
                 return []
-
             data = r.json()
-
             # Normalização
             if isinstance(data, dict):
                 raw = data.get("data", [])
@@ -98,14 +95,11 @@ class SpreadArbBot:
             else:
                 print(f"[GET_MARKETS] Formato inesperado: {type(data)}")
                 return []
-
             valid_markets = []
             for m in raw:
                 if not isinstance(m, dict):
                     continue
-                # Debug uma vez para entender estrutura
-                # (descomentar se quiser ver um mercado bruto)
-                # print("[DEBUG MARKET]", json.dumps(m, indent=2)[:500])
+                # Filtros atuais (podemos relaxar depois)
                 if not m.get("active"):
                     continue
                 if not m.get("enableOrderBook"):
@@ -113,10 +107,8 @@ class SpreadArbBot:
                 if not m.get("clobTokenIds"):
                     continue
                 valid_markets.append(m)
-
             print(f"[GET_MARKETS] Pós-filtro: {len(valid_markets)} mercados válidos")
             return valid_markets
-
         except Exception as e:
             print(f"[ERRO GET_MARKETS] {e}")
             return []
