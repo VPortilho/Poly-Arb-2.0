@@ -38,7 +38,7 @@ class SpreadArbBot:
             print(f"[ERRO CONEXAO] {e}")
             exit(1)
 
-    def get_markets(self):
+        def get_markets(self):
         """
         Busca mercados diretamente da CLOB, ja com clobTokenIds.
         """
@@ -47,14 +47,27 @@ class SpreadArbBot:
             r = requests.get(url, timeout=5)
             data = r.json()
 
-            # Filtra mercados ativos e com orderbook ligado
-            markets = [
-                m for m in data
-                if m.get("active")
-                and m.get("enableOrderBook")
-                and m.get("clobTokenIds")
-            ]
+            # DEBUG basico pra ver o formato da resposta
+            if isinstance(data, dict):
+                print("[DEBUG API] Resposta dict, chaves:", list(data.keys())[:5])
+                return []
+            if not isinstance(data, list):
+                print("[DEBUG API] Tipo inesperado:", type(data), str(data)[:200])
+                return []
+
+            markets = []
+            for m in data:
+                if not isinstance(m, dict):
+                    continue  # ignora strings ou outros tipos
+                if (
+                    m.get("active")
+                    and m.get("enableOrderBook")
+                    and m.get("clobTokenIds")
+                ):
+                    markets.append(m)
+
             return markets
+
         except Exception as e:
             print(f"[ERRO API] {e}")
             return []
