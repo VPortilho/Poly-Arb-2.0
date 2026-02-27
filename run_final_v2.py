@@ -78,27 +78,34 @@ class SpreadArbBot:
     def get_markets(self):
         """Busca mercados e filtra apenas os ativos e operáveis."""
         try:
-            url = f"{HOST}/markets"
-            r = requests.get(url, headers=HEADERS, timeout=4)
+            url = "https://clob.polymarket.com/markets"
+            r = requests.get(url, timeout=4)
+            print(f"[GET_MARKETS] HTTP {r.status_code}")
 
             if r.status_code != 200:
-                print(f"[API] Erro {r.status_code} ao buscar mercados.")
+                print(f"[API] Erro {r.status_code} ao buscar mercados. Body: {r.text[:200]}")
                 return []
 
             data = r.json()
 
-            # Normalização da resposta (lista ou dict com 'data')
+            # Normalização
             if isinstance(data, dict):
                 raw = data.get("data", [])
+                print(f"[GET_MARKETS] dict com chave 'data' → {len(raw)} itens")
             elif isinstance(data, list):
                 raw = data
+                print(f"[GET_MARKETS] lista simples → {len(raw)} itens")
             else:
+                print(f"[GET_MARKETS] Formato inesperado: {type(data)}")
                 return []
 
             valid_markets = []
             for m in raw:
                 if not isinstance(m, dict):
                     continue
+                # Debug uma vez para entender estrutura
+                # (descomentar se quiser ver um mercado bruto)
+                # print("[DEBUG MARKET]", json.dumps(m, indent=2)[:500])
                 if not m.get("active"):
                     continue
                 if not m.get("enableOrderBook"):
@@ -107,6 +114,7 @@ class SpreadArbBot:
                     continue
                 valid_markets.append(m)
 
+            print(f"[GET_MARKETS] Pós-filtro: {len(valid_markets)} mercados válidos")
             return valid_markets
 
         except Exception as e:
