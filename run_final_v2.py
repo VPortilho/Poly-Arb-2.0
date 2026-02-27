@@ -56,29 +56,41 @@ class SpreadArbBot:
     # ==============================
     def get_markets(self):
         try:
-            url = f"{HOST}/markets"
+            url = "https://clob.polymarket.com/markets"
             r = requests.get(url, headers=HEADERS, timeout=5)
-            r.raise_for_status()
             data = r.json()
 
-            # FIX 3: a resposta pode ser dict com chave 'data'
+            # DEBUG bruto
+            print(f"[DEBUG] Tipo da resposta: {type(data)}")
             if isinstance(data, dict):
-                data = data.get("data", [])
-
-            if not isinstance(data, list):
-                print("[DEBUG] Resposta inesperada:", type(data))
-                return []
+                print("[DEBUG] Chaves do dict:", list(data.keys())[:10])
+            if isinstance(data, list):
+                print(f"[DEBUG] Total de itens na lista: {len(data)}")
 
             markets = []
-            for m in data:
-                if (
-                    isinstance(m, dict)
-                    and m.get("active")
-                    and m.get("enableOrderBook")
-                    and m.get("clobTokenIds")
-                ):
+
+            # Caso venha como lista de mercados
+            if isinstance(data, list):
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
                     markets.append(m)
 
+            # Caso venha como dict com chave "markets"
+            if isinstance(data, dict) and "markets" in data:
+                for m in data["markets"]:
+                    if not isinstance(m, dict):
+                        continue
+                    markets.append(m)
+
+            # Caso venha como dict com chave "data"
+            if isinstance(data, dict) and "data" in data:
+                for m in data["data"]:
+                    if not isinstance(m, dict):
+                        continue
+                    markets.append(m)
+
+            print(f"[DEBUG] Mercados após filtro básico: {len(markets)}")
             return markets
 
         except Exception as e:
