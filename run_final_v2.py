@@ -15,7 +15,7 @@ load_dotenv()
 PRIVATE_KEY = os.getenv("POLY_KEY")
 HOST = "https://clob.polymarket.com"   # FIX 1: removida barra final
 CHAIN_ID = 137
-MIN_SPREAD_PROFIT = 0.02               # 2%
+MIN_SPREAD_PROFIT = 0.005              # 0.5%
 SCAN_INTERVAL = 3                      # segundos
 DRY_RUN = True                         # False = envia ordens reais
 
@@ -29,7 +29,7 @@ HEADERS = {
 class SpreadArbBot:
 
     def __init__(self):
-        self.bankroll = 100.0
+        self.bankroll = 20.0
         self.trades = 0
         self.profit = 0.0
         self.client = None
