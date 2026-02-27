@@ -57,7 +57,7 @@ class SpreadArbBot:
     def get_markets(self):
         try:
             url = "https://clob.polymarket.com/markets"
-            r = requests.get(url, headers=HEADERS, timeout=5)
+            r = requests.get(url, timeout=5)
             data = r.json()
 
             print(f"[DEBUG] Tipo da resposta: {type(data)}")
@@ -66,7 +66,7 @@ class SpreadArbBot:
 
             markets = []
 
-            # Caso padrão: dict com chave "data" que contém a lista de mercados
+            # Resposta padrão: dict com chave "data" que contém a lista de mercados
             if isinstance(data, dict) and isinstance(data.get("data"), list):
                 raw_markets = data["data"]
             # fallback: se vier direto como lista
@@ -81,6 +81,7 @@ class SpreadArbBot:
             for m in raw_markets:
                 if not isinstance(m, dict):
                     continue
+                # filtros básicos
                 if not m.get("active"):
                     continue
                 if not m.get("enableOrderBook"):
