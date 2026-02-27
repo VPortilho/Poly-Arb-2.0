@@ -76,7 +76,7 @@ class SpreadArbBot:
     # BUSCAR MERCADOS
     # ==============================
     def get_markets(self):
-        """Busca mercados e filtra apenas os ativos e operáveis."""
+        """Busca mercados da CLOB com campos reais da API (snake_case)."""
         try:
             url = "https://clob.polymarket.com/markets"
             r = requests.get(url, timeout=4)
@@ -85,7 +85,7 @@ class SpreadArbBot:
                 print(f"[API] Erro {r.status_code} ao buscar mercados. Body: {r.text[:200]}")
                 return []
             data = r.json()
-            # Normalização
+            # Normalização da resposta
             if isinstance(data, dict):
                 raw = data.get("data", [])
                 print(f"[GET_MARKETS] dict com chave 'data' → {len(raw)} itens")
@@ -99,12 +99,26 @@ class SpreadArbBot:
             for m in raw:
                 if not isinstance(m, dict):
                     continue
-                # Filtros atuais (podemos relaxar depois)
-                if not m.get("active"):
+                # A API usa snake_case:
+                #  - enable_order_book (não enableOrderBook)
+                #  - provavelmente clob_token_ids (não clobTokenIds)
+                is_active = m.get("active", False)
+                has_order_book = m.get("enable_order_book", False)
+                # clob_token_ids pode vir como lista ou string JSON
+                clob_ids = m.get("clob_token_ids") or m.get("clobTokenIds")
+                if isinstance(clob_ids, str):
+                    try:
+                        clob_ids = json.loads(clob_ids)
+                    except json.JSONDecodeError:
+                        clob_ids = None
+                if not is_active:
                     continue
-                if not m.get("enableOrderBook"):
+                if not has_order_book:
                     continue
-                if not m.get("clobTokenIds"):
+                if not clob_ids:
+                    continue
+                # Garante pelo menos 2 tokens (YES/NO)
+                if isinstance(clob_ids, list) and len(clob_ids) < 2:
                     continue
                 valid_markets.append(m)
             print(f"[GET_MARKETS] Pós-filtro: {len(valid_markets)} mercados válidos")
