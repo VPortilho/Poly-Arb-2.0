@@ -2,309 +2,299 @@ import asyncio
 import json
 import os
 import time
-import requests
-from datetime import datetime
+from datetime import datetime, UTC
 
+import requests
+from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs
 from py_clob_client.order_builder.constants import BUY
-from dotenv import load_dotenv
 
-# Carrega variáveis do .env
+# =========================
+# CONFIG / ENV
+# =========================
+
 load_dotenv()
 
-# ==========================================
-# CONFIGURAÇÃO AVANÇADA (VIA .ENV OU DEFAULTS)
-# ==========================================
-
 PRIVATE_KEY = os.getenv("POLY_KEY")
-HOST = "https://clob.polymarket.com"             # SEM barra final
+HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
 
-# Estratégia
-BANKROLL        = float(os.getenv("POLY_BANKROLL",      "20.0"))   # Banca total
-STAKE_PCT       = float(os.getenv("POLY_STAKE_PCT",     "0.10"))   # 10% por trade
-MIN_PROFIT      = float(os.getenv("POLY_MIN_PROFIT",    "0.005"))  # 0.5% lucro mínimo
-MAX_SPREAD_COST = float(os.getenv("POLY_MAX_COST",      "1.00"))   # Break even máximo
-
-# Execução
-SCAN_INTERVAL = int(os.getenv("POLY_SCAN_INTERVAL", "1"))          # Intervalo em segundos
-DRY_RUN = os.getenv("POLY_DRY_RUN", "true").lower() == "true"      # Simulação por padrão
-
-# Filtros de Mercado
-MIN_LIQUIDITY = float(os.getenv("POLY_MIN_LIQ", "5.0"))            # Liquidez mínima ($5)
-
-# Headers para evitar bloqueio da API
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; ArbBot/2.1)",
-    "Accept": "application/json"
-}
+# Configuração via .env (com defaults seguros)
+BANKROLL      = float(os.getenv("POLY_BANKROLL",     "20.0"))
+STAKE_PCT     = float(os.getenv("POLY_STAKE_PCT",    "0.10"))       # 10% da banca por trade
+MIN_PROFIT    = float(os.getenv("POLY_MIN_PROFIT",   "0.005"))      # 0.5% de edge mínimo
+MIN_LIQUIDITY = float(os.getenv("POLY_MIN_LIQUIDITY","5.0"))        # liquidez mínima em USD
+SCAN_INTERVAL = int(os.getenv("POLY_SCAN_INTERVAL",  "3"))          # segundos
+DRY_RUN       = os.getenv("POLY_DRY_RUN", "true").lower() == "true" # simulação por padrão
 
 
 class SpreadArbBot:
-
     def __init__(self):
-        self.bankroll = BANKROLL
-        self.trades = 0
+        self.bankroll     = BANKROLL
+        self.trades       = 0
         self.total_profit = 0.0
-        self.opportunities_seen = 0
-        self.start_time = time.time()
-        self.client = None
+        self.client       = None
 
-        print("\n" + "="*40)
-        print("🤖 POLYMARKET ARBITRAGE BOT v2.1 (OTIMIZADO)")
-        print("="*40)
-        print(f"💰 Bankroll: ${self.bankroll:.2f}")
-        print(f"🎯 Meta Lucro: {MIN_PROFIT*100:.2f}%")
-        print(f"📦 Stake por trade: {STAKE_PCT*100:.1f}%")
-        print(f"⚡ Intervalo Scan: {SCAN_INTERVAL}s")
-        print(f"🧪 Modo Simulação (DRY_RUN): {DRY_RUN}")
-        print("="*40 + "\n")
+        print("=" * 50)
+        print("🤖 POLYMARKET ARB BOT - FÓRMULA SIMPLES")
+        print("=" * 50)
+        print(f"Bankroll: ${self.bankroll:.2f}")
+        print(f"Stake por trade: {STAKE_PCT*100:.1f}% da banca")
+        print(f"Lucro mínimo (edge): {MIN_PROFIT*100:.2f}%")
+        print(f"Liquidez mínima: ${MIN_LIQUIDITY:.2f}")
+        print(f"Intervalo de scan: {SCAN_INTERVAL}s")
+        print(f"DRY_RUN (simulação): {DRY_RUN}")
+        print("=" * 50)
 
         if not PRIVATE_KEY:
-            print("[ERRO CRÍTICO] Variável POLY_KEY não definida!")
-            exit(1)
+            print("[ERRO] POLY_KEY não definido no .env ou ambiente.")
+            raise SystemExit(1)
 
         try:
             self.client = ClobClient(host=HOST, key=PRIVATE_KEY, chain_id=CHAIN_ID)
-            print("[SISTEMA] Conectado à Polygon/CLOB com sucesso! 🟢\n")
+            print("[LIVE] Conectado à carteira na Polygon 🟢")
         except Exception as e:
-            print(f"[ERRO FATAL] Falha na conexão: {e}")
-            exit(1)
+            print(f"[ERRO CONEXAO] {e}")
+            raise SystemExit(1)
 
-    # ==============================
+    # =========================
     # BUSCAR MERCADOS
-    # ==============================
+    # =========================
     def get_markets(self):
-        """Busca mercados da CLOB com campos reais da API (snake_case)."""
+        """
+        Busca mercados da CLOB.
+        Forma esperada da API:
+        {
+          "data": [ { ... mercado ... }, ... ],
+          "next_cursor": ...,
+          ...
+        }
+        """
         try:
-            url = "https://clob.polymarket.com/markets"
-            r = requests.get(url, timeout=4)
-            print(f"[GET_MARKETS] HTTP {r.status_code}")
-            if r.status_code != 200:
-                print(f"[API] Erro {r.status_code} ao buscar mercados. Body: {r.text[:200]}")
+            url = f"{HOST}/markets"
+            r = requests.get(url, timeout=5)
+            status = r.status_code
+            if status != 200:
+                print(f"[GET_MARKETS] HTTP {status} - corpo: {r.text[:200]}")
                 return []
+
             data = r.json()
-            # Normalização da resposta
             if isinstance(data, dict):
                 raw = data.get("data", [])
-                print(f"[GET_MARKETS] dict com chave 'data' → {len(raw)} itens")
             elif isinstance(data, list):
                 raw = data
-                print(f"[GET_MARKETS] lista simples → {len(raw)} itens")
             else:
                 print(f"[GET_MARKETS] Formato inesperado: {type(data)}")
                 return []
-            valid_markets = []
+
+            valid = []
             for m in raw:
                 if not isinstance(m, dict):
                     continue
-                # A API usa snake_case:
-                #  - enable_order_book (não enableOrderBook)
-                #  - provavelmente clob_token_ids (não clobTokenIds)
-                is_active = m.get("active", False)
-                has_order_book = m.get("enable_order_book", False)
-                # clob_token_ids pode vir como lista ou string JSON
-                clob_ids = m.get("clob_token_ids") or m.get("clobTokenIds")
+
+                # Campos reais da API: active, enable_order_book, clob_token_ids
+                if not m.get("active", False):
+                    continue
+
+                if not m.get("enable_order_book", False):
+                    continue
+
+                clob_ids = m.get("clob_token_ids")
                 if isinstance(clob_ids, str):
                     try:
                         clob_ids = json.loads(clob_ids)
-                    except json.JSONDecodeError:
+                    except Exception:
                         clob_ids = None
-                if not is_active:
+
+                if not clob_ids or not isinstance(clob_ids, list):
                     continue
-                if not has_order_book:
+                if len(clob_ids) < 2:
                     continue
-                if not clob_ids:
-                    continue
-                # Garante pelo menos 2 tokens (YES/NO)
-                if isinstance(clob_ids, list) and len(clob_ids) < 2:
-                    continue
-                valid_markets.append(m)
-            print(f"[GET_MARKETS] Pós-filtro: {len(valid_markets)} mercados válidos")
-            return valid_markets
+
+                valid.append(m)
+
+            print(
+                f"[GET_MARKETS] Total bruto: {len(raw)} | "
+                f"após filtros: {len(valid)}"
+            )
+            return valid
+
         except Exception as e:
             print(f"[ERRO GET_MARKETS] {e}")
             return []
 
-    # ==============================
-    # VERIFICAR OPORTUNIDADE
-    # ==============================
+    # =========================
+    # CHECAR OPORTUNIDADE
+    # =========================
     def check_opportunity(self, market):
-        """Analisa o orderbook e calcula o spread/custo de arbitragem."""
+        """
+        Fórmula simples:
+        - Pega melhor ask de YES e NO.
+        - Custo = yes_ask + no_ask
+        - Edge = 1 - custo
+        - Se edge >= MIN_PROFIT e liquidez >= stake → oportunidade.
+        """
         try:
-            ids = market.get("clobTokenIds")
-            if isinstance(ids, str):
-                ids = json.loads(ids)
+            clob_ids = market.get("clob_token_ids")
+            if isinstance(clob_ids, str):
+                try:
+                    clob_ids = json.loads(clob_ids)
+                except Exception:
+                    return None
 
-            if not isinstance(ids, list) or len(ids) < 2:
+            if not isinstance(clob_ids, list) or len(clob_ids) < 2:
                 return None
 
-            t_yes, t_no = ids[0], ids[1]
+            t_yes, t_no = clob_ids[0], clob_ids[1]
 
             url_yes = f"{HOST}/book?token_id={t_yes}"
             url_no  = f"{HOST}/book?token_id={t_no}"
 
             with requests.Session() as s:
-                r1 = s.get(url_yes, headers=HEADERS, timeout=2).json()
-                r2 = s.get(url_no,  headers=HEADERS, timeout=2).json()
+                r1 = s.get(url_yes, timeout=3).json()
+                r2 = s.get(url_no,  timeout=3).json()
 
             if not r1.get("asks") or not r2.get("asks"):
                 return None
 
-            yes_price = float(r1["asks"][0]["price"])
-            yes_size  = float(r1["asks"][0]["size"])
+            yes_ask  = float(r1["asks"][0]["price"])
+            yes_size = float(r1["asks"][0]["size"])
+            no_ask   = float(r2["asks"][0]["price"])
+            no_size  = float(r2["asks"][0]["size"])
 
-            no_price  = float(r2["asks"][0]["price"])
-            no_size   = float(r2["asks"][0]["size"])
+            total_cost = yes_ask + no_ask
+            edge       = 1.0 - total_cost  # ex: 0.01 = 1%
 
-            total_cost = yes_price + no_price
+            # Liquidez disponível em USD
+            liq_yes_usd  = yes_size * yes_ask
+            liq_no_usd   = no_size  * no_ask
+            max_liquidity = min(liq_yes_usd, liq_no_usd)
 
-            # Liquidez disponível em $
-            liq_yes_usd   = yes_size * yes_price
-            liq_no_usd    = no_size  * no_price
-            max_trade_usd = min(liq_yes_usd, liq_no_usd)
-
-            if max_trade_usd < MIN_LIQUIDITY:
+            if edge <= 0:
                 return None
 
+            slug = market.get("slug") or market.get("question") or "sem-slug"
+
             return {
-                "slug":      market.get("slug", "unknown"),
-                "yes_price": yes_price,
-                "no_price":  no_price,
-                "cost":      total_cost,
-                "max_trade": max_trade_usd,
-                "t_yes":     t_yes,
-                "t_no":      t_no
+                "slug":         slug,
+                "yes_ask":      yes_ask,
+                "no_ask":       no_ask,
+                "cost":         total_cost,
+                "edge":         edge,
+                "max_liquidity":max_liquidity,
+                "t_yes":        t_yes,
+                "t_no":         t_no,
             }
 
         except Exception:
             return None
 
-    # ==============================
-    # EXECUTAR TRADE
-    # ==============================
+    # =========================
+    # EXECUTAR (OU SIMULAR) TRADE
+    # =========================
     def execute_trade(self, opp):
-        """Executa a arbitragem (ou simula)."""
-        cost          = opp["cost"]
-        profit_margin = 1.0 - cost
+        cost = opp["cost"]
+        edge = opp["edge"]
+        slug = opp["slug"]
 
-        # Stake respeitando liquidez disponível
-        target_stake     = self.bankroll * STAKE_PCT
-        real_stake       = min(target_stake, opp["max_trade"])
-        projected_profit = real_stake * profit_margin
+        target_stake = self.bankroll * STAKE_PCT
+        stake        = min(target_stake, opp["max_liquidity"])
 
-        # Log de oportunidade (mesmo abaixo do mínimo, para monitorar)
-        if cost < 1.0:
-            status = "✅ ENTRADA" if profit_margin >= MIN_PROFIT else "⚠️ SPREAD BAIXO"
-            print(
-                f"[{status}] {opp['slug'][:40]} | "
-                f"Custo: {cost:.4f} | Margem: {profit_margin*100:.2f}% | "
-                f"Stake: ${real_stake:.2f} | Liq: ${opp['max_trade']:.2f}"
-            )
+        if stake <= 0:
+            return
 
-        # Critério de entrada
-        if profit_margin < MIN_PROFIT:
+        projected_profit = stake * edge
+
+        # Log sempre que encontrar edge positiva
+        status = (
+            "✅ ENTRADA"
+            if edge >= MIN_PROFIT and stake >= MIN_LIQUIDITY
+            else "⚠️ EDGE BAIXO"
+        )
+        print(
+            f"[{status}] {slug[:60]} | "
+            f"custo={cost:.4f} | edge={edge*100:.3f}% | "
+            f"stake=${stake:.2f} | liq=${opp['max_liquidity']:.2f}"
+        )
+
+        # Critério de entrada real
+        if edge < MIN_PROFIT:
+            return
+        if stake < MIN_LIQUIDITY:
             return
 
         if DRY_RUN:
-            self.trades += 1
+            self.trades       += 1
             self.total_profit += projected_profit
             print(
-                f"   [SIMULAÇÃO] 🚀 Ordem enviada! "
-                f"Lucro est.: ${projected_profit:.4f} | "
-                f"Total Acumulado: ${self.total_profit:.4f}"
+                f"   [SIMULAÇÃO] lucro est.: ${projected_profit:.4f} | "
+                f"PnL simulado: ${self.total_profit:.4f}"
             )
             return
 
-        # EXECUÇÃO REAL
+        # Execução real na CLOB
         try:
-            print("   [REAL] 🚀 Enviando ordens para CLOB...")
-
+            print("   [REAL] Enviando ordens para CLOB...")
             o1 = self.client.create_and_post_order(
                 OrderArgs(
-                    price=opp["yes_price"],
-                    size=round(real_stake / opp["yes_price"], 4),
+                    price=opp["yes_ask"],
+                    size=round(stake / opp["yes_ask"], 4),
                     side=BUY,
-                    token_id=opp["t_yes"]
+                    token_id=opp["t_yes"],
                 )
             )
             o2 = self.client.create_and_post_order(
                 OrderArgs(
-                    price=opp["no_price"],
-                    size=round(real_stake / opp["no_price"], 4),
+                    price=opp["no_ask"],
+                    size=round(stake / opp["no_ask"], 4),
                     side=BUY,
-                    token_id=opp["t_no"]
+                    token_id=opp["t_no"],
                 )
             )
-
-            print(f"   [SUCESSO] Ordens criadas! IDs: {o1} | {o2}")
+            print(f"   [SUCESSO] Ordens criadas: YES={o1} | NO={o2}")
             self.trades += 1
-            self.total_profit += projected_profit
-            self.bankroll += projected_profit
-
-            print(
-                f"   [STATS] Trades: {self.trades} | "
-                f"Lucro acumulado: ${self.total_profit:.4f} | "
-                f"Bankroll: ${self.bankroll:.2f}"
-            )
-
         except Exception as e:
-            print(f"   [FALHA EXECUÇÃO] {e}")
+            print(f"   [ERRO EXEC] {e}")
 
-    # ==============================
+    # =========================
     # LOOP PRINCIPAL
-    # ==============================
+    # =========================
     async def run(self):
-        print("[MONITOR] Iniciando loop de varredura...")
+        print("[STATUS] Iniciando loop de varredura...\n")
+        while True:
+            t0      = time.time()
+            markets = self.get_markets()
 
-        try:
-            while True:
-                start_scan = time.time()
-                markets = self.get_markets()
+            best_edge = -1.0
+            best_slug = None
 
-                best_cost = 2.0
-                best_slug = ""
-                opportunities = 0
+            for m in markets:
+                opp = self.check_opportunity(m)
+                if not opp:
+                    continue
 
-                for m in markets:
-                    opp = self.check_opportunity(m)
-                    if opp:
-                        if opp["cost"] < best_cost:
-                            best_cost = opp["cost"]
-                            best_slug = opp["slug"]
+                if opp["edge"] > best_edge:
+                    best_edge = opp["edge"]
+                    best_slug = opp["slug"]
 
-                        self.execute_trade(opp)
+                self.execute_trade(opp)
 
-                        if opp["cost"] < 1.0:
-                            opportunities += 1
+            dt  = time.time() - t0
+            now = datetime.now(UTC).strftime("%H:%M:%S")
 
-                duration = time.time() - start_scan
-                msg_best = (
-                    f"Melhor: {best_cost:.4f} ({best_slug[:15]}...)"
-                    if best_cost < 2.0 else "Nenhum spread < 1.0"
-                )
+            if best_edge > 0:
+                msg_best = f"melhor edge={best_edge*100:.3f}% ({best_slug[:40]})"
+            else:
+                msg_best = "nenhum edge > 0"
 
-                print(
-                    f"[SCAN] {datetime.utcnow().strftime('%H:%M:%S')} | "
-                    f"Mkts: {len(markets)} | Custo < 1.0: {opportunities} | "
-                    f"{msg_best} | Tempo: {duration:.2f}s"
-                )
-
-                await asyncio.sleep(SCAN_INTERVAL)
-
-        except KeyboardInterrupt:
-            print("\n[ENCERRADO] Bot parado pelo usuário.")
             print(
-                f"[RESUMO] Trades: {self.trades} | "
-                f"Lucro: ${self.total_profit:.4f} | "
-                f"Bankroll final: ${self.bankroll:.2f}"
+                f"[SCAN] {now} | mkts={len(markets)} | {msg_best} | tempo={dt:.2f}s\n"
             )
 
+            await asyncio.sleep(SCAN_INTERVAL)
 
-# ==============================
-# MAIN
-# ==============================
+
 if __name__ == "__main__":
     bot = SpreadArbBot()
     asyncio.run(bot.run())
