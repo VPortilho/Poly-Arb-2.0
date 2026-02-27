@@ -60,37 +60,36 @@ class SpreadArbBot:
             r = requests.get(url, headers=HEADERS, timeout=5)
             data = r.json()
 
-            # DEBUG bruto
             print(f"[DEBUG] Tipo da resposta: {type(data)}")
             if isinstance(data, dict):
                 print("[DEBUG] Chaves do dict:", list(data.keys())[:10])
-            if isinstance(data, list):
-                print(f"[DEBUG] Total de itens na lista: {len(data)}")
 
             markets = []
 
-            # Caso venha como lista de mercados
-            if isinstance(data, list):
-                for m in data:
-                    if not isinstance(m, dict):
-                        continue
-                    markets.append(m)
+            # Caso padrão: dict com chave "data" que contém a lista de mercados
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                raw_markets = data["data"]
+            # fallback: se vier direto como lista
+            elif isinstance(data, list):
+                raw_markets = data
+            else:
+                print("[DEBUG] Formato inesperado de resposta:", type(data))
+                return []
 
-            # Caso venha como dict com chave "markets"
-            if isinstance(data, dict) and "markets" in data:
-                for m in data["markets"]:
-                    if not isinstance(m, dict):
-                        continue
-                    markets.append(m)
+            print(f"[DEBUG] Total bruto de mercados: {len(raw_markets)}")
 
-            # Caso venha como dict com chave "data"
-            if isinstance(data, dict) and "data" in data:
-                for m in data["data"]:
-                    if not isinstance(m, dict):
-                        continue
-                    markets.append(m)
+            for m in raw_markets:
+                if not isinstance(m, dict):
+                    continue
+                if not m.get("active"):
+                    continue
+                if not m.get("enableOrderBook"):
+                    continue
+                if not m.get("clobTokenIds"):
+                    continue
+                markets.append(m)
 
-            print(f"[DEBUG] Mercados após filtro básico: {len(markets)}")
+            print(f"[DEBUG] Mercados após filtros: {len(markets)}")
             return markets
 
         except Exception as e:
